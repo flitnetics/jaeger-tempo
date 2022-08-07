@@ -73,11 +73,158 @@ type sLokiData struct {
         Result sLokiResult `json:"data"`
 }
 
+// Query endpoint
+type Value struct {
+        StringValue string `json:"stringValue"`
+}
+
+type Attributes struct {
+        Key string `json:"key"`
+        Value Value `json:"value"`
+}
+
+type Resource struct {
+        Attributes []Attributes `json:"attributes"`
+}
+
+type Spans struct {
+       TraceId           string        `json:"traceId"`
+       SpanId            string       `json:"spanId"`
+       Name              string       `json:"name"`
+       StartTimeUnixNano string       `json:"startTimeUnixNano"`
+       EndTimeUnixNano   string       `json:"endTimeUnixNano"`
+       Attributes        []Attributes `json:"attributes"`
+}
+
+type InstrumentationLibrarySpans struct {
+        InstrumentationLibrary []string `json:"instrumentationLibrary"`
+        Spans                  []Spans `json:"spans"`
+}
+
+type Batches struct {
+        Resource Resource `json:"resource"`
+        InstrumentationLibrarySpans []InstrumentationLibrarySpans `json:"instrumentationLibrarySpans"`
+}
+
+type Search struct {
+        Batches []Batches `json:"batches"`
+}
+
+// tag 
+type Tag struct {
+        TagValues []string  `json:"tagValues"`
+}
+
+// Search Endpoint
+type Traces struct {
+        TraceId string `json:"traceID"`
+	RootServiceName string `json:"rootServiceName"`
+	RootTraceName string `json:"rootTraceName"`
+	StartTimeUnixNano string `json:"startTimeUnixNano"`
+	DurationMs uint32 `json:"durationMs"`
+}
+
+type Trace struct {
+        Traces []Traces `json:"traces"`
+}
+
 // NewReader returns a new SpanReader for the object store.
 func NewReader(cfg Config) *Reader {
 	return &Reader{
                 cfg: cfg,
 	}
+}
+
+func GetTagValues() (Tag, error) {
+        var tag Tag
+
+        httpurl :=  "http://host.docker.internal:3200/api/search/tag/service.name/values"
+
+        response, err := http.Get(httpurl)
+        if err != nil {
+                return Tag{}, err
+        }
+
+        body, err := ioutil.ReadAll(response.Body)
+        if err != nil {
+                return Tag{}, err
+        }
+
+        err = json.Unmarshal(body, &tag)
+        if err != nil {
+               log.Println("Problem with unmarshalling json: %s", err)
+        }
+
+        return tag, err
+}
+
+func GetSearch(service string) (Trace, error) {
+        var result Trace
+
+        httpurl :=  fmt.Sprintf("http://host.docker.internal:3200/api/search?tags=service.name=%s&limit=100000", service)
+
+        response, err := http.Get(httpurl)
+        if err != nil {
+                return Trace{}, err
+        }
+
+        body, err := ioutil.ReadAll(response.Body)
+        if err != nil {
+                return Trace{}, err
+        }
+
+        err = json.Unmarshal(body, &result)
+        if err != nil {
+               log.Println("Problem with unmarshalling json: %s", err)
+        }
+
+        return result, err
+}
+
+func GetSearchTrace(tags string, minDuration uint32, maxDuration uint32, limit int, start time.Time, end time.Time) (Trace, error) {
+        var result Trace
+
+        httpurl :=  fmt.Sprintf("http://host.docker.internal:3200/api/search?tags=%s&minDuration=%s&maxDuration=%s&limit=%s&start=%s&end=%s", tags, minDuration, maxDuration, limit, start, end)
+
+        response, err := http.Get(httpurl)
+        if err != nil {
+                return Trace{}, err
+        }
+
+        body, err := ioutil.ReadAll(response.Body)
+        if err != nil {
+                return Trace{}, err
+        }
+
+        err = json.Unmarshal(body, &result)
+        if err != nil {
+               log.Println("Problem with unmarshalling json: %s", err)
+        }
+
+        return result, err
+}
+
+func GetQuery(traceId string, start time.Time, end time.Time) (Search, error) {
+       var result Search
+
+        httpurl :=  fmt.Sprintf("http://host.docker.internal:3200/%s&start=%s&end=%s", traceId, start, end)
+
+        response, err := http.Get(httpurl)
+        if err != nil {
+                return Search{}, err
+        }
+
+        body, err := ioutil.ReadAll(response.Body)
+        if err != nil {
+                return Search{}, err
+        }
+
+        err = json.Unmarshal(body, &result)
+        if err != nil {
+               log.Println("Problem with unmarshalling json: %s", err)
+        }
+
+        return result, err
 }
 
 func GetSpansRange(r *Reader, fooLabelsWithName string, startTime time.Time, endTime time.Time, resultsLimit uint32) (LokiData, error) {
@@ -104,53 +251,15 @@ func GetSpansRange(r *Reader, fooLabelsWithName string, startTime time.Time, end
         return s_labels, err
 }
 
-func GetSpans(limit uint32, fooLabelsWithName string) (sLokiData, error) {
-        var s_labels sLokiData
-
-        query   := url.QueryEscape(fooLabelsWithName)
-        httpurl := fmt.Sprintf("http://localhost:3200/loki/api/v1/query?query=%s&time=%d&limit=%d", query, time.Now().UnixNano(), limit)
-
-        response, err := http.Get(httpurl)
-        if err != nil {
-                return sLokiData{}, err
-        }
-
-        body, err := ioutil.ReadAll(response.Body)
-        if err != nil {
-                return sLokiData{}, err
-        }
-
-        err = json.Unmarshal(body, &s_labels)
-        if err != nil {
-               log.Println("Problem with unmarshalling json: %s", err)
-        }
-
-        return s_labels, err
-}
-
-func extractServices(a sLokiData) []string {
+func extractOperations(a Trace) []string {
     list := []string{}
     keys := make(map[string]bool)
 
-    for _, entry := range a.Result.Stream {
-        if _, value := keys[entry.Metric.ServiceName]; !value {
+    for _, entry := range a.Traces {
+        if _, value := keys[entry.RootTraceName]; !value {
                 // assign key value to list
-                keys[entry.Metric.ServiceName] = true
-                list = append(list, entry.Metric.ServiceName)
-        }
-    }
-    return list
-}
-
-func extractOperations(a sLokiData) []string {
-    list := []string{}
-    keys := make(map[string]bool)
-
-    for _, entry := range a.Result.Stream {
-        if _, value := keys[entry.Metric.OperationName]; !value {
-                // assign key value to list
-                keys[entry.Metric.ServiceName] = true
-                list = append(list, entry.Metric.OperationName)
+                keys[entry.RootTraceName] = true
+                list = append(list, entry.RootTraceName)
         }
     }
     return list
@@ -158,28 +267,22 @@ func extractOperations(a sLokiData) []string {
 
 // GetServices returns all services traced by Jaeger
 func (r *Reader) GetServices(ctx context.Context) ([]string, error) {
-
-        //var fooLabelsWithName = "{env=\"prod\"}"
-        var fooLabelsWithName = "count_over_time({env=\"prod\"}[1h])"
-
-        // get the chunks
-        //chunks, err := GetSpansRange(r, fooLabelsWithName, time.Now().Add(time.Duration(-1) * time.Hour), time.Now(), uint32(10000))
-        chunks, err := GetSpans(uint32(1000), fooLabelsWithName)
-
-	services := extractServices(chunks)
- 
-        return services, err
+	services, err := GetTagValues()
+        if err != nil {
+                log.Println("error getting tag values!")
+	}
+        return services.TagValues, nil
 }
 
 // GetOperations returns all operations for a specific service traced by Jaeger
 func (r *Reader) GetOperations(ctx context.Context, param spanstore.OperationQueryParameters) ([]spanstore.Operation, error) {
-        var fooLabelsWithName = "count_over_time({env=\"prod\"}[1h])"
+        results, err := GetSearch(param.ServiceName)
+        if err != nil {
+                log.Println("error getting doing search!")
+        }
+	operations := extractOperations(results)
 
-        // get the chunks
-        chunks, err := GetSpans(uint32(1000), fooLabelsWithName)
-        operations := extractOperations(chunks)
-
-        spans := make([]spanstore.Operation, 0, len(operations))
+	spans := make([]spanstore.Operation, 0, len(operations))
         for _, operation := range operations {
                 if len(operation) > 0 {
                         spans = append(spans, spanstore.Operation{Name: operation})
@@ -356,7 +459,7 @@ func (r *Reader) FindTraces(ctx context.Context, query *spanstore.TraceQueryPara
                                log.Println("decoding logfmt error!", d.Err())
                        }
                        // end of decode
-               }       
+               }
        }
 
        // final query

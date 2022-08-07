@@ -13,7 +13,6 @@ import (
 	"github.com/go-kit/log/level"
 	"github.com/gorilla/mux"
 	"github.com/grafana/dskit/flagext"
-	"github.com/grafana/dskit/grpcutil"
 	"github.com/grafana/dskit/kv/memberlist"
 	"github.com/grafana/dskit/modules"
 	"github.com/grafana/dskit/ring"
@@ -23,9 +22,7 @@ import (
 	"github.com/prometheus/common/version"
 	"github.com/weaveworks/common/middleware"
 	"github.com/weaveworks/common/server"
-	"github.com/weaveworks/common/signals"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/health/grpc_health_v1"
 	"gopkg.in/yaml.v3"
 
 	"github.com/grafana/tempo/modules/compactor"
@@ -48,9 +45,6 @@ import (
         "github.com/jaegertracing/jaeger/storage/dependencystore"
         "github.com/jaegertracing/jaeger/storage/spanstore"
 )
-
-const metricsNamespace = "tempo"
-const apiDocs = "https://grafana.com/docs/tempo/latest/api_docs/"
 
 var (
         _ shared.StoragePlugin = (*Storage)(nil)
@@ -89,9 +83,6 @@ type Config struct {
 
 // RegisterFlagsAndApplyDefaults registers flag.
 func (c *Config) RegisterFlagsAndApplyDefaults(prefix string, f *flag.FlagSet) {
-	c.Target = SingleBinary
-	// global settings
-	f.StringVar(&c.Target, "target", SingleBinary, "target module")
 	f.BoolVar(&c.AuthEnabled, "auth.enabled", false, "Set to true to enable auth (deprecated: use multitenancy.enabled)")
 	f.BoolVar(&c.MultitenancyEnabled, "multitenancy.enabled", false, "Set to true to enable multitenancy.")
 	f.BoolVar(&c.SearchEnabled, "search.enabled", false, "Set to true to enable search (unstable).")
@@ -149,11 +140,6 @@ func (c *Config) MultitenancyIsEnabled() bool {
 
 // CheckConfig checks if config values are suspect.
 func (c *Config) CheckConfig() {
-	if c.Target == MetricsGenerator && !c.MetricsGeneratorEnabled {
-		level.Warn(log.Logger).Log("msg", "target == metrics-generator but metrics_generator_enabled != true",
-			"explain", "The metrics-generator will only receive data if metrics_generator_enabled is set to true globally")
-	}
-
 	if c.Ingester.CompleteBlockTimeout < c.StorageConfig.Trace.BlocklistPoll {
 		level.Warn(log.Logger).Log("msg", "ingester.complete_block_timeout < storage.trace.blocklist_poll",
 			"explain", "You may receive 404s between the time the ingesters have flushed a trace and the querier is aware of the new block")
@@ -272,70 +258,7 @@ func (t *App) setupAuthMiddleware() {
 
 // Run starts, and blocks until a signal is received.
 func (t *App) Run() error {
-	if !t.ModuleManager.IsUserVisibleModule(t.cfg.Target) {
-		level.Warn(log.Logger).Log("msg", "selected target is an internal module, is this intended?", "target", t.cfg.Target)
-	}
-
-	serviceMap, err := t.ModuleManager.InitModuleServices(t.cfg.Target)
-	if err != nil {
-		return fmt.Errorf("failed to init module services %w", err)
-	}
-	t.serviceMap = serviceMap
-
-	servs := []services.Service(nil)
-	for _, s := range serviceMap {
-		servs = append(servs, s)
-	}
-
-	sm, err := services.NewManager(servs...)
-	if err != nil {
-		return fmt.Errorf("failed to start service manager %w", err)
-	}
-
-	// before starting servers, register /ready handler and gRPC health check service.
-	t.Server.HTTP.Path("/ready").Handler(t.readyHandler(sm))
-	t.Server.HTTP.Path("/status").Handler(t.statusHandler()).Methods("GET")
-	t.Server.HTTP.Path("/status/{endpoint}").Handler(t.statusHandler()).Methods("GET")
-	grpc_health_v1.RegisterHealthServer(t.Server.GRPC, grpcutil.NewHealthCheck(sm))
-
-	// Let's listen for events from this manager, and log them.
-	healthy := func() { level.Info(log.Logger).Log("msg", "Tempo started") }
-	stopped := func() { level.Info(log.Logger).Log("msg", "Tempo stopped") }
-	serviceFailed := func(service services.Service) {
-		// if any service fails, stop everything
-		sm.StopAsync()
-
-		// let's find out which module failed
-		for m, s := range serviceMap {
-			if s == service {
-				if service.FailureCase() == modules.ErrStopProcess {
-					level.Info(log.Logger).Log("msg", "received stop signal via return error", "module", m, "err", service.FailureCase())
-				} else {
-					level.Error(log.Logger).Log("msg", "module failed", "module", m, "err", service.FailureCase())
-				}
-				return
-			}
-		}
-
-		level.Error(log.Logger).Log("msg", "module failed", "module", "unknown", "err", service.FailureCase())
-	}
-	sm.AddListener(services.NewManagerListener(healthy, stopped, serviceFailed))
-
-	// Setup signal handler. If signal arrives, we stop the manager, which stops all the services.
-	handler := signals.NewHandler(t.Server.Log)
-	go func() {
-		handler.Loop()
-		sm.StopAsync()
-	}()
-
-	// Start all services. This can really only fail if some service is already
-	// in other state than New, which should not be the case.
-	err = sm.StartAsync(context.Background())
-	if err != nil {
-		return fmt.Errorf("failed to start service manager %w", err)
-	}
-
-	return sm.AwaitStopped(context.Background())
+	return nil
 }
 
 func (t *App) writeStatusVersion(w io.Writer) error {
@@ -458,7 +381,6 @@ func (t *App) statusHandler() http.HandlerFunc {
 		simpleEndpoints := map[string]func(io.Writer) error{
 			"version":   t.writeStatusVersion,
 			"services":  t.writeStatusServices,
-			"endpoints": t.writeStatusEndpoints,
 		}
 
 		wrapStatus := func(endpoint string) {
@@ -556,60 +478,6 @@ func (t *App) writeStatusServices(w io.Writer) error {
 
 	x.AppendSeparator()
 	x.Render()
-
-	return nil
-}
-
-func (t *App) writeStatusEndpoints(w io.Writer) error {
-	type endpoint struct {
-		name  string
-		regex string
-	}
-
-	endpoints := []endpoint{}
-
-	err := t.Server.HTTP.Walk(func(route *mux.Route, router *mux.Router, ancestors []*mux.Route) error {
-		e := endpoint{}
-
-		pathTemplate, err := route.GetPathTemplate()
-		if err == nil {
-			e.name = pathTemplate
-		}
-
-		pathRegexp, err := route.GetPathRegexp()
-		if err == nil {
-			e.regex = pathRegexp
-		}
-
-		endpoints = append(endpoints, e)
-
-		return nil
-	})
-	if err != nil {
-		return errors.Wrap(err, "error walking routes")
-	}
-
-	sort.Slice(endpoints[:], func(i, j int) bool {
-		return endpoints[i].name < endpoints[j].name
-	})
-
-	x := table.NewWriter()
-	x.SetOutputMirror(w)
-	x.AppendHeader(table.Row{"name", "regex"})
-
-	for _, e := range endpoints {
-		x.AppendRows([]table.Row{
-			{e.name, e.regex},
-		})
-	}
-
-	x.AppendSeparator()
-	x.Render()
-
-	_, err = w.Write([]byte(fmt.Sprintf("\nAPI documentation: %s\n\n", apiDocs)))
-	if err != nil {
-		return errors.Wrap(err, "error writing status endpoints")
-	}
 
 	return nil
 }
