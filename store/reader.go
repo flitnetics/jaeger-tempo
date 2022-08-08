@@ -47,7 +47,7 @@ type LokiStream struct {
 }
 
 type LokiResult struct {
-        Stream []LokiStream `json:"result"`         
+        Stream []LokiStream `json:"result"`
 }
 
 type LokiData struct {
@@ -78,26 +78,40 @@ type Value struct {
         StringValue string `json:"stringValue"`
 }
 
-type Attributes struct {
+type ResourceAttributes struct {
         Key string `json:"key"`
         Value Value `json:"value"`
 }
 
 type Resource struct {
-        Attributes []Attributes `json:"attributes"`
+        ResourceAttributes []ResourceAttributes `json:"attributes"`
+}
+
+type SpanAttributes struct {
+        Key string `json:"key"`
+        Value Value `json:"value"`
 }
 
 type Spans struct {
-       TraceId           string        `json:"traceId"`
+       TraceId           string       `json:"traceId"`
        SpanId            string       `json:"spanId"`
-       Name              string       `json:"name"`
        StartTimeUnixNano string       `json:"startTimeUnixNano"`
        EndTimeUnixNano   string       `json:"endTimeUnixNano"`
-       Attributes        []Attributes `json:"attributes"`
+       SpanAttributes    []SpanAttributes `json:"attributes"`
+       Duration          string       `json:"duration"`
+       Flags             string       `json:"flags"`
+       OperationName     string       `json:"name"`
+       ProcessTags       string       `json:"process_tags"`
+       ProcessId         string       `json:"process_id"`
+       ServiceName       string       `json:"service_name"`
+       StartTime         string       `json:"start_time"`
+       Tags              string       `json:"tags"`
+       TraceIdHigh       string       `json:"traceId_high"`
+       TraceIdLow        string       `json:"traceId_low"`
 }
 
 type InstrumentationLibrarySpans struct {
-        InstrumentationLibrary []string `json:"instrumentationLibrary"`
+        InstrumentationLibrary map[string]string `json:"instrumentationLibrary"`
         Spans                  []Spans `json:"spans"`
 }
 
@@ -181,10 +195,13 @@ func GetSearch(service string) (Trace, error) {
         return result, err
 }
 
-func GetSearchTrace(tags string, minDuration uint32, maxDuration uint32, limit int, start time.Time, end time.Time) (Trace, error) {
+func GetSearchTrace(tags string, minDuration time.Duration, maxDuration time.Duration, limit uint32, start time.Time, end time.Time) (Trace, error) {
         var result Trace
 
-        httpurl :=  fmt.Sprintf("http://host.docker.internal:3200/api/search?tags=%s&minDuration=%s&maxDuration=%s&limit=%s&start=%s&end=%s", tags, minDuration, maxDuration, limit, start, end)
+	startTime := start.Unix()
+	endTime   := end.Unix()
+        httpurl :=  fmt.Sprintf("http://host.docker.internal:3200/api/search?tags=service.name=%s&minDuration=%s&maxDuration=%s&limit=%d&start=%d&end=%d", tags, minDuration, maxDuration, limit, startTime, endTime)
+	log.Println("GetSearchTraceURL: %s", httpurl)
 
         response, err := http.Get(httpurl)
         if err != nil {
@@ -193,6 +210,7 @@ func GetSearchTrace(tags string, minDuration uint32, maxDuration uint32, limit i
 
         body, err := ioutil.ReadAll(response.Body)
         if err != nil {
+		log.Println("Error reading body: ", body)
                 return Trace{}, err
         }
 
@@ -205,9 +223,13 @@ func GetSearchTrace(tags string, minDuration uint32, maxDuration uint32, limit i
 }
 
 func GetQuery(traceId string, start time.Time, end time.Time) (Search, error) {
-       var result Search
+        var result Search
 
-        httpurl :=  fmt.Sprintf("http://host.docker.internal:3200/%s&start=%s&end=%s", traceId, start, end)
+        startTime := start.Unix()
+        endTime   := end.Unix()
+        httpurl :=  fmt.Sprintf("http://host.docker.internal:3200/api/traces/%s?start=%d&end=%d", traceId, startTime, endTime)
+
+	log.Println("GetQueryURL: %s", httpurl)
 
         response, err := http.Get(httpurl)
         if err != nil {
@@ -216,15 +238,18 @@ func GetQuery(traceId string, start time.Time, end time.Time) (Search, error) {
 
         body, err := ioutil.ReadAll(response.Body)
         if err != nil {
+                log.Println("Error reading body: ", body)
                 return Search{}, err
         }
+
 
         err = json.Unmarshal(body, &result)
         if err != nil {
                log.Println("Problem with unmarshalling json: %s", err)
         }
 
-        return result, err
+        return result, err 
+	return Search{}, nil
 }
 
 func GetSpansRange(r *Reader, fooLabelsWithName string, startTime time.Time, endTime time.Time, resultsLimit uint32) (LokiData, error) {
@@ -342,7 +367,7 @@ func (r *Reader) GetTrace(ctx context.Context, traceID model.TraceID) (*model.Tr
                                 },
                         })
                 }
-        } 
+        }
 
         return &model.Trace{Spans: span, ProcessMap: trace}, err
 }
@@ -352,57 +377,17 @@ func buildTraceWhere(query *spanstore.TraceQueryParameters) (string, time.Time, 
         var builder string
         //log.Println("min time: %s", query.StartTimeMin)
 
-        builder = "{"
-        builder = builder + "env=\"prod\", "
-
         if len(query.ServiceName) > 0 {
-                builder = builder + fmt.Sprintf("service_name = \"%s\", ", query.ServiceName)
+		builder = fmt.Sprintf("%s", query.ServiceName)
         }
-        if len(query.OperationName) > 0 {
+        /* if len(query.OperationName) > 0 {
                 builder = builder + fmt.Sprintf("operation_name = \"%s\", ", query.OperationName)
-        }
-
-        /*
-        if len(query.Tags) > 0 {
-                for i, v := range query.Tags { 
-                        builder = builder + fmt.Sprintf("tags =~ \".*%s:%s.*\", ", i, v)
-                }
-        }
-        */
-
-        // Remove last two characters (space and comma)
-        builder = builder[:len(builder)-2]
-        builder = builder + "}"
-
-        // We are using logfmt to filter down the data
-        if query.DurationMin > 0*time.Second || query.DurationMax > 0*time.Second {
-                builder = builder + fmt.Sprintf(" | logfmt ")
-
-        }
-
-        /*
-        if len(query.ServiceName) > 0 {
-                builder = builder + fmt.Sprintf(" | service_name=\"%s\"", query.ServiceName)
-        }
-        if len(query.OperationName) > 0 {
-                builder = builder + fmt.Sprintf(" | operation_name=\"%s\"", query.OperationName)
-        }*/
+        } */
 
         if len(query.Tags) > 0 {
                 for i, v := range query.Tags {
-                        builder = builder + fmt.Sprintf(" |~ \".*%s:%s.*\"", i, v)
+                        builder = builder + fmt.Sprintf("&\"%i=%v\"", i, v)
                 }
-        }
-
-        // filters
-        // minimum duration in duration
-        if query.DurationMin > 0*time.Second {
-                builder = builder + fmt.Sprintf(" | latency > %s", time.Duration(query.DurationMin) / time.Nanosecond)
-        }
-
-        // max duration in duration
-        if query.DurationMax > 0*time.Second {
-                builder = builder + fmt.Sprintf(" | latency < %s", time.Duration(query.DurationMax) / time.Nanosecond)
         }
 
         // how many result of the traces do we want to show
@@ -422,102 +407,100 @@ func (r *Reader) FindTraces(ctx context.Context, query *spanstore.TraceQueryPara
        log.Println("FindTraces executed")
 
        builder, _, _ := buildTraceWhere(query)
-       var fooLabelsWithName = builder
 
        m := make(map[string]bool)
        var traceIdsLow []string
 
-       spans, err := GetSpansRange(r, fooLabelsWithName, query.StartTimeMin, query.StartTimeMax, uint32(query.NumTraces))
-       chunks := spans.Result.Stream
+       minDuration := time.Duration(query.DurationMin) / time.Nanosecond
+       maxDuration := time.Duration(query.DurationMax) / time.Nanosecond
 
-       ret := make([]*model.Trace, 0, len(chunks))
+       tra, err := GetSearchTrace(builder, minDuration, maxDuration, uint32(query.NumTraces), query.StartTimeMin, query.StartTimeMax)
+       traces := tra.Traces
+
+       ret := make([]*model.Trace, 0, len(traces))
        if err != nil {
                return ret, err
        }
        grouping := make(map[model.TraceID]*model.Trace)
 
-       for _, chunk := range chunks {
-               // we decode the logfmt data in values
-               // please refactor this decoder out to common code
-               for _, value := range chunk.SValues {
+       for _, trace := range traces {
+                       // get all trace ids
+		       var traceIdLow string
 
-                       // query based on trace ID
-                       d := logfmt.NewDecoder(strings.NewReader(value[1]))
-                       for d.ScanRecord() {
-                               for d.ScanKeyval() {
-                                       if string(d.Key()) == "trace_id_low" {
-                                               traceIdLow := string(d.Value()) 
-                                                // make sure trace id is unique
-                                               if !m[traceIdLow] {
-                                                       traceIdsLow = append(traceIdsLow, traceIdLow)
-                                                       m[traceIdLow] = true
-                                               }
-                                       }
-                               }
+                       if !m[traceIdLow] {
+                               traceIdsLow = append(traceIdsLow, trace.TraceId)
+                               m[traceIdLow] = true
                        }
-                       if d.Err() != nil {
-                               log.Println("decoding logfmt error!", d.Err())
-                       }
-                       // end of decode
-               }
        }
 
        // final query
        // now we get the real values
        for _, traceIDLow := range traceIdsLow {
 
-               fooLabelsWithName = fmt.Sprintf("{env=\"prod\"} |= `trace_id_low=\"%s\"`", traceIDLow)
-               relatedSpans, err := GetSpansRange(r, fooLabelsWithName, query.StartTimeMin, query.StartTimeMax, uint32(300))
+               query, err := GetQuery(traceIDLow, query.StartTimeMin, query.StartTimeMax)
                if err != nil {
                        log.Println("Unable to retrieve related Spans")
                }
 
-               chunks := relatedSpans.Result.Stream
+	       queries := query.Batches
 
-               for _, chunk := range chunks {
+               for _, trace := range queries {
                        var serviceName string
                        var processId string
                        var processTags map[string]interface{}
 
-                       for _, value := range chunk.SValues {
-                               d := logfmt.NewDecoder(strings.NewReader(value[1]))
-                               for d.ScanRecord() {
-                                       for d.ScanKeyval() {
-                                               if string(d.Key()) == "service_name" {
-                                                       serviceName = string(d.Value())
-                                               }
-                                               if string(d.Key()) == "process_id" {
-                                                       processId = string(d.Value())
-                                               }
-                                               if string(d.Key()) == "process_tags" {
-                                                       processTags = StrToMap(string(d.Value()))
-                                               }
-                                      }
-                               }
-                               if d.Err() != nil {
-                                      log.Println("decoding logfmt error!", d.Err())
-                               }
-                               // end of decode
+		       resourceAttributes := trace.Resource.ResourceAttributes
 
-                               modelSpan := toModelSpanNew(value[1], chunk.SpanData)
-                               trace, found := grouping[modelSpan.TraceID]
-                               if !found {
-                                       trace = &model.Trace{
-                                               Spans:      make([]*model.Span, 0, len(chunks)),
-                                               ProcessMap: make([]model.Trace_ProcessMapping, 0, len(chunks)),
+		       // resource array
+		       for _, resourceAttribute := range resourceAttributes {
+
+                               if resourceAttribute.Key == "service_name" {
+                                       serviceName = resourceAttribute.Value.StringValue
+		               }
+
+			       // instrument library spans array
+		               instrumentLibrarySpans := trace.InstrumentationLibrarySpans
+			       for _, instrumentLibrary := range instrumentLibrarySpans {
+
+				       spans := instrumentLibrary.Spans
+				       // span array
+		                       for _, span := range spans {
+
+					       // span attribute array
+					       for _, spanAttribute := range span.SpanAttributes {
+						       // span attributes
+					               j, err := json.Marshal(spanAttribute)
+                                                       if err != nil {
+                                                               log.Println("Cannot marshal data from spanAttribute: ", err)
+                                                       }
+                                                       err = json.Unmarshal(j, &processTags)
+						       if err != nil {
+                                                               log.Println("Cannot unmarshal data from spanAttribute: ", err)
+						       }
+                                                       processId = ""
+
+                                                       modelSpan := toModelSpan(span, spanAttribute, resourceAttribute)
+                                                       trace, found := grouping[modelSpan.TraceID]
+                                                       if !found {
+                                                               trace = &model.Trace{
+                                                                       Spans:      make([]*model.Span, 0, len(spans)),
+                                                                       ProcessMap: make([]model.Trace_ProcessMapping, 0, len(spans)),
+                                                               }
+                                                               grouping[modelSpan.TraceID] = trace
+                                                       }
+                                                       trace.Spans = append(trace.Spans, modelSpan)
+                                                       procMap := model.Trace_ProcessMapping{
+                                                               ProcessID: processId,
+                                                               Process: model.Process{
+                                                                       ServiceName: serviceName,
+                                                                       Tags:        mapToModelKV(processTags),
+                                                               },
+                                                       }
+                                                       trace.ProcessMap = append(trace.ProcessMap, procMap)
+					       }
                                        }
-                                       grouping[modelSpan.TraceID] = trace
-                               }
-                               trace.Spans = append(trace.Spans, modelSpan)
-                               procMap := model.Trace_ProcessMapping{
-                                       ProcessID: processId,
-                                       Process: model.Process{
-                                               ServiceName: serviceName,
-                                               Tags:        mapToModelKV(processTags),
-                                       },
-                               }
-                               trace.ProcessMap = append(trace.ProcessMap, procMap)
-                      }
+		               }
+                       }
                }
        }
 
@@ -567,7 +550,7 @@ func (r *Reader) FindTraceIDs(ctx context.Context, query *spanstore.TraceQueryPa
                         // end of decode
                         traces = append(traces, trace)
 
-                }      
+                }
         }
 
         return traces, err

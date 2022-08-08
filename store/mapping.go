@@ -5,9 +5,11 @@ import (
         "strconv"
         "time"
         "strings"
-        _ "log"
+        "log"
         "fmt"
+	"encoding/json"
         "github.com/go-logfmt/logfmt"
+	"hash/fnv"
 )
 
 type whereBuilder struct {
@@ -56,14 +58,14 @@ func toModelSpanNew(values string, chunk SpanData) *model.Span {
                 // iterate over all logfmt values
 		for d.ScanKeyval() {
                         if string(d.Key()) == "span_id" {
-                                convId, _ := strconv.ParseUint(string(d.Value()), 10, 64)
+                                convId, _ := strconv.ParseUint(string(d.Value()), 10, 32)
                                 id = model.NewSpanID(convId)
                         }
                         if string(d.Key()) == "trace_id_low" {
-                                trace_id_low, _ = strconv.ParseUint(string(d.Value()), 10, 64)
+                                trace_id_low, _ = strconv.ParseUint(string(d.Value()), 10, 32)
                         }
                         if string(d.Key()) == "trace_id_high" {
-                                trace_id_high, _ = strconv.ParseUint(string(d.Value()), 10, 64)
+                                trace_id_high, _ = strconv.ParseUint(string(d.Value()), 10, 32)
                         }
                         if string(d.Key()) == "flags" {
                                 convFlags, _ := strconv.ParseUint(string(d.Value()), 10, 64)
@@ -99,7 +101,7 @@ func toModelSpanNew(values string, chunk SpanData) *model.Span {
 
         return &model.Span{
                 SpanID:        id,
-                TraceID:       model.TraceID{Low: trace_id_low, High: trace_id_high},
+		TraceID:       model.TraceID{Low: trace_id_low, High: trace_id_high},
                 OperationName: operation_name,
                 Flags:         flags,
                 Duration:      duration,
@@ -116,54 +118,82 @@ func toModelSpanNew(values string, chunk SpanData) *model.Span {
         }
 }
 
-func toModelSpan(chunk SpanData) *model.Span {
+func toModelSpan(chunk Spans, spanAttribute SpanAttributes, resourceAttribute ResourceAttributes) *model.Span {
         var id model.SpanID
-        convId, _ := strconv.ParseUint(chunk.Id, 10, 64)
+        convId := hash(chunk.SpanId)
         id = model.NewSpanID(convId)
 
         var trace_id_low uint64
-        trace_id_low, _ = strconv.ParseUint(chunk.TraceIdLow, 10, 64)
-
+        trace_id_low = hash(chunk.TraceId)
         var trace_id_high uint64
-        trace_id_high, _ = strconv.ParseUint(chunk.TraceIdHigh, 10, 64)
+        trace_id_high = hash(chunk.TraceId)
 
-        var operation_name string 
+        var operation_name string
         operation_name = chunk.OperationName
 
         var flags model.Flags
         convFlags, _ := strconv.ParseUint(chunk.Flags, 10, 64)
         flags = model.Flags(convFlags)
-         
+
         var duration time.Duration
-        convDur, _ := strconv.ParseUint(chunk.Duration, 10, 64)
-        duration = time.Duration(convDur)
+        startTime, err := strconv.ParseInt(chunk.StartTimeUnixNano, 10, 64)
+        if err != nil {
+                log.Println("error converting starttime")
+        }
+	sTime := time.Unix(0, startTime)
+        endTime, err := strconv.ParseInt(chunk.EndTimeUnixNano, 10, 64)
+        if err != nil {
+                log.Println("error converting endtime")
+        }
+	eTime := time.Unix(0, endTime)
+	duration = eTime.Sub(sTime)
 
         var tags map[string]interface{}
-        tags = StrToMap(chunk.Tags)
+        j, err := json.Marshal(spanAttribute)
+        if err != nil {
+                log.Println("Error marshalling tags: ", err)
+        }
+        json.Unmarshal(j, &tags)
+        if err != nil {
+                log.Println("Error unmarshalling tags: ", err)
+        }
 
         var process_id string
         process_id = chunk.ProcessId
 
         var service_name string
-        service_name = chunk.ServiceName
+	if resourceAttribute.Key == "service.name" {
+                service_name = resourceAttribute.Value.StringValue
+	}
 
         var process_tags map[string]interface{}
-        process_tags = StrToMap(chunk.ProcessTags)
+        pt, err := json.Marshal(resourceAttribute)
+        if err != nil {
+                log.Println("Error unmarshalling process tags: ", err)
+        }
+        err = json.Unmarshal(pt, &process_tags)
+	if err != nil {
+                log.Println("Error unmarshalling process tags: ", err)
+	}
 
         /* var warnings string
         if (chunk.Metric[2].Name == "warnings") {
                 warnings = chunk.Metric[2].Value
         } */
 
-        var start_time time.Time
-        start_time, _ = time.Parse(time.RFC3339, chunk.StartTime)
+        var start_time int64
+	start_time, err = strconv.ParseInt(chunk.StartTimeUnixNano, 10, 64)
+	if err != nil {
+                log.Println("Error parsing time: ", err)
+	}
+	start_unixtime := time.Unix(0, start_time) // start_time is nanosecond this case
 
 	return &model.Span{
 		SpanID:        id,
 		TraceID:       model.TraceID{Low: trace_id_low, High: trace_id_high},
 		OperationName: operation_name,
 		Flags:         flags,
-		StartTime:     start_time,
+		StartTime:     start_unixtime,
 		Duration:      duration,
 		Tags:          mapToModelKV(tags),
 		ProcessID:     process_id,
@@ -241,4 +271,10 @@ func mapModelKV(input []model.KeyValue) string {
 	}
         //log.Println(ret)
 	return ret
+}
+
+func hash(s string) uint64 {
+        h := fnv.New64a()
+        h.Write([]byte(s))
+        return h.Sum64()
 }
