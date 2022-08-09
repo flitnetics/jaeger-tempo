@@ -32,7 +32,7 @@ GRPC_STORAGE_PLUGIN_BINARY="./jaeger-tempo" GRPC_STORAGE_PLUGIN_CONFIGURATION_FI
 
 Example with docker:
 
-Make sure you run this in a folder with `jaeger-tempo` and `config.yml` present.
+Make sure you run this in a folder with `jaeger-tempo` binary and `config.yml` present.
 ```
 docker run --name jaeger -e SPAN_STORAGE_TYPE=grpc-plugin \
   -e GRPC_STORAGE_PLUGIN_BINARY="/app/jaeger-tempo" \
