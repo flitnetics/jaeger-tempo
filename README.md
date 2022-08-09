@@ -17,8 +17,8 @@ In order to compile the plugin from source code you can use `go build`:
 cd /path/to/jaeger-tempo
 go build ./cmd/jaeger-tempo
 ```
-Changes for AWS with Retention for 28 days
-**(Update and add the necessary bits like above, ie. "compactor" and "table_manager")**
+
+config.yml (or any name you want)
 ```
 backend: tempo.host:3200 # no http// here
 ```
