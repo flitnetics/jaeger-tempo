@@ -2,163 +2,91 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"io"
-	"os"
-	"reflect"
-	"runtime"
+	"strings"
 
-	"github.com/drone/envsubst"
-	"github.com/go-kit/log/level"
-	"github.com/grafana/dskit/flagext"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/version"
-	"github.com/weaveworks/common/logging"
-	"gopkg.in/yaml.v2"
+	"github.com/hashicorp/go-hclog"
+	hcplugin "github.com/hashicorp/go-plugin"
+	"github.com/jaegertracing/jaeger/plugin/storage/grpc"
+	"github.com/jaegertracing/jaeger/plugin/storage/grpc/shared"
+	"github.com/jaegertracing/jaeger/storage/dependencystore"
+	"github.com/jaegertracing/jaeger/storage/spanstore"
+	otgrpc "github.com/opentracing-contrib/go-grpc"
+	"github.com/opentracing/opentracing-go"
+	"github.com/spf13/viper"
+	jaeger_config "github.com/uber/jaeger-client-go/config"
+	google_grpc "google.golang.org/grpc"
 
-	"jaeger-tempo/store"
-        "github.com/jaegertracing/jaeger/plugin/storage/grpc"
-        "github.com/jaegertracing/jaeger/plugin/storage/grpc/shared"
-
-	"github.com/grafana/tempo/pkg/util/log"
-
-        "github.com/hashicorp/go-hclog"
+	"github.com/grafana/tempo/cmd/tempo-query/tempo"
 )
-
-const appName = "tempo"
-
-// Version is set via build flag -ldflags -X main.Version
-var (
-	Version  string
-	Branch   string
-	Revision string
-)
-
-func init() {
-	version.Version = Version
-	version.Branch = Branch
-	version.Revision = Revision
-	prometheus.MustRegister(version.NewCollector(appName))
-}
 
 func main() {
-        logger := hclog.New(&hclog.LoggerOptions{
-                Name:  "jaeger-tempo",
-                Level: hclog.Warn, // Jaeger only captures >= Warn, so don't bother logging below Warn
-        })
+	logger := hclog.New(&hclog.LoggerOptions{
+		Name:       "jaeger-tempo",
+		Level:      hclog.Error, // Jaeger only captures >= Warn, so don't bother logging below Warn
+		JSONFormat: true,
+	})
 
-	printVersion := flag.Bool("version", false, "Print this builds version information")
-	ballastMBs := flag.Int("mem-ballast-size-mbs", 0, "Size of memory ballast to allocate in MBs.")
-
-	config, err := loadConfig()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed parsing config: %v\n", err)
-		os.Exit(1)
-	}
-	if *printVersion {
-		fmt.Println(version.Print(appName))
-		os.Exit(0)
-	}
-
-	// Init the logger which will honor the log level set in config.Server
-	if reflect.DeepEqual(&config.Server.LogLevel, &logging.Level{}) {
-		level.Error(log.Logger).Log("msg", "invalid log level")
-		os.Exit(1)
-	}
-	log.InitLogger(&config.Server)
-
-	// Allocate a block of memory to alter GC behaviour. See https://github.com/golang/go/issues/23044
-	ballast := make([]byte, *ballastMBs*1024*1024)
-
-	// Warn the user for suspect configurations
-	config.CheckConfig()
-
-        var closeStore func() error
-
-	// Start Tempo
-	t, store, closeStore, err := app.New(*config)
-	if err != nil {
-		level.Error(log.Logger).Log("msg", "error initialising Tempo", "err", err)
-		os.Exit(1)
-	}
-
-	level.Info(log.Logger).Log("msg", "Starting Tempo", "version", version.Info())
-
-	if err := t.Run(); err != nil {
-		level.Error(log.Logger).Log("msg", "error running Tempo", "err", err)
-		os.Exit(1)
-	}
-	runtime.KeepAlive(ballast)
-
-        grpc.Serve(&shared.PluginServices{
-                Store:        store,
-        })
-
-        if err = closeStore(); err != nil {
-                logger.Error("failed to close store", "error", err)
-                os.Exit(1)
-        }
-
-	level.Info(log.Logger).Log("msg", "Tempo running")
-}
-
-func loadConfig() (*app.Config, error) {
-	const (
-		configFileOption      = "config"
-		configExpandEnvOption = "config.expand-env"
-	)
-
-	var (
-		configFile      string
-		configExpandEnv bool
-	)
-
-	args := os.Args[1:]
-	config := &app.Config{}
-
-	// first get the config file
-	fs := flag.NewFlagSet("", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-
-	fs.StringVar(&configFile, configFileOption, "", "")
-	fs.BoolVar(&configExpandEnv, configExpandEnvOption, false, "")
-
-	// Try to find -config.file & -config.expand-env flags. As Parsing stops on the first error, eg. unknown flag,
-	// we simply try remaining parameters until we find config flag, or there are no params left.
-	// (ContinueOnError just means that flag.Parse doesn't call panic or os.Exit, but it returns error, which we ignore)
-	for len(args) > 0 {
-		_ = fs.Parse(args)
-		args = args[1:]
-	}
-
-	// load config defaults and register flags
-	config.RegisterFlagsAndApplyDefaults("", flag.CommandLine)
-
-	// overlay with config file if provided
-	if configFile != "" {
-		buff, err := os.ReadFile(configFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read configFile %s: %w", configFile, err)
-		}
-
-		if configExpandEnv {
-			s, err := envsubst.EvalEnv(string(buff))
-			if err != nil {
-				return nil, fmt.Errorf("failed to expand env vars from configFile %s: %w", configFile, err)
-			}
-			buff = []byte(s)
-		}
-
-		err = yaml.UnmarshalStrict(buff, config)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse configFile %s: %w", configFile, err)
-		}
-	}
-
-	// overlay with cli
-	flagext.IgnoredFlag(flag.CommandLine, configFileOption, "Configuration file to load")
-	flagext.IgnoredFlag(flag.CommandLine, configExpandEnvOption, "Whether to expand environment variables in config file")
+	var configPath string
+	flag.StringVar(&configPath, "config", "", "A path to the plugin's configuration file")
 	flag.Parse()
 
-	return config, nil
+	v := viper.New()
+	v.AutomaticEnv()
+	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
+
+	if configPath != "" {
+		v.SetConfigFile(configPath)
+
+		err := v.ReadInConfig()
+		if err != nil {
+			logger.Error("failed to parse configuration file", "error", err)
+		}
+	}
+
+	closer, err := initJaeger("tempo-grpc-plugin")
+	if err != nil {
+		logger.Error("failed to init tracer", "error", err)
+	}
+	defer closer.Close()
+
+	cfg := &tempo.Config{}
+	cfg.InitFromViper(v)
+
+	backend := tempo.New(cfg)
+	plugin := &plugin{backend: backend}
+	grpc.ServeWithGRPCServer(&shared.PluginServices{
+		Store: plugin,
+	}, func(options []google_grpc.ServerOption) *google_grpc.Server {
+		return hcplugin.DefaultGRPCServer([]google_grpc.ServerOption{
+			google_grpc.UnaryInterceptor(otgrpc.OpenTracingServerInterceptor(opentracing.GlobalTracer())),
+			google_grpc.StreamInterceptor(otgrpc.OpenTracingStreamServerInterceptor(opentracing.GlobalTracer())),
+		})
+	})
+}
+
+type plugin struct {
+	backend *tempo.Backend
+}
+
+func (p *plugin) DependencyReader() dependencystore.Reader {
+	return p.backend
+}
+
+func (p *plugin) SpanReader() spanstore.Reader {
+	return p.backend
+}
+
+func (p *plugin) SpanWriter() spanstore.Writer {
+	return p.backend
+}
+
+func initJaeger(service string) (io.Closer, error) {
+	// .FromEnv() uses standard environment variables to allow for easy configuration
+	cfg, err := jaeger_config.FromEnv()
+	if err != nil {
+		return nil, err
+	}
+
+	return cfg.InitGlobalTracer(service)
 }
