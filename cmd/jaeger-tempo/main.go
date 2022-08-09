@@ -17,7 +17,7 @@ import (
 	jaeger_config "github.com/uber/jaeger-client-go/config"
 	google_grpc "google.golang.org/grpc"
 
-	"github.com/grafana/tempo/cmd/tempo-query/tempo"
+	"jaeger-tempo/store"
 )
 
 func main() {
