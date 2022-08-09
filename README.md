@@ -20,7 +20,7 @@ go build ./cmd/jaeger-tempo
 
 config.yml (or any name you want)
 ```
-backend: tempo.host:3200 # no http// here
+backend: tempo.host:3200 # no http:// here
 ```
 
 ## Start
