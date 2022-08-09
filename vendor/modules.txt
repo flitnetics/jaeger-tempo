@@ -43,7 +43,6 @@ github.com/golang/protobuf/ptypes/empty
 github.com/golang/protobuf/ptypes/timestamp
 # github.com/grafana/tempo v1.4.1
 ## explicit; go 1.17
-github.com/grafana/tempo/cmd/tempo-query/tempo
 github.com/grafana/tempo/pkg/tempopb
 github.com/grafana/tempo/pkg/tempopb/common/v1
 github.com/grafana/tempo/pkg/tempopb/pool
