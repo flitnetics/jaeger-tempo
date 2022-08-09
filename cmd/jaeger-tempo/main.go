@@ -50,10 +50,10 @@ func main() {
 	}
 	defer closer.Close()
 
-	cfg := &tempo.Config{}
+	cfg := &store.Config{}
 	cfg.InitFromViper(v)
 
-	backend := tempo.New(cfg)
+	backend := store.New(cfg)
 	plugin := &plugin{backend: backend}
 	grpc.ServeWithGRPCServer(&shared.PluginServices{
 		Store: plugin,
@@ -66,7 +66,7 @@ func main() {
 }
 
 type plugin struct {
-	backend *tempo.Backend
+	backend *store.Backend
 }
 
 func (p *plugin) DependencyReader() dependencystore.Reader {
