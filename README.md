@@ -1,4 +1,4 @@
-This is the repository that contains Tempo plugin for Jaeger.
+This is the repository that contains Jaeger plugin to interface with Tempo.
 
 You are free to use this software under a permissive open-source MIT license.
 
