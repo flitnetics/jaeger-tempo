@@ -30,6 +30,26 @@ In order to start plugin just tell jaeger the path to a config compiled plugin.
 GRPC_STORAGE_PLUGIN_BINARY="./jaeger-tempo" GRPC_STORAGE_PLUGIN_CONFIGURATION_FILE=./config.yaml SPAN_STORAGE_TYPE=grpc-plugin  GRPC_STORAGE_PLUGIN_LOG_LEVEL=DEBUG ./all-in-one
 ```
 
+Example with docker:
+
+Make sure you run this in a folder with `jaeger-tempo` and `config.yml` present.
+```
+docker run --name jaeger -e SPAN_STORAGE_TYPE=grpc-plugin \
+  -e GRPC_STORAGE_PLUGIN_BINARY="/app/jaeger-tempo" \
+  -e GRPC_STORAGE_PLUGIN_CONFIGURATION_FILE=/app/config.yml \
+  -e GRPC_STORAGE_PLUGIN_LOG_LEVEL=DEBUG --mount type=bind,source="$(pwd)",target=/app \
+  -e COLLECTOR_ZIPKIN_HOST_PORT=:9411 -e ASSUME_NO_MOVING_GC_UNSAFE_RISK_IT_WITH=go1.19\
+  -p 5775:5775/udp \
+  -p 6831:6831/udp \
+  -p 6832:6832/udp \
+  -p 5778:5778 \
+  -p 16686:16686 \
+  -p 14268:14268 \
+  -p 14250:14250 \
+  -p 9411:9411  \
+  jaegertracing/all-in-one:1.22
+```
+
 For Jaeger Operator on Kubernetes for testing/demo **!!NOT PRODUCTION!!**, sample manifest:
 
 ```
