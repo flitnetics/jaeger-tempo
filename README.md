@@ -69,7 +69,7 @@ spec:
 apiVersion: jaegertracing.io/v1
 kind: Jaeger
 metadata:
-  name: jaeger-objectstorage
+  name: jaeger-tempo
 spec:
   strategy: allInOne
   allInOne:
@@ -79,7 +79,7 @@ spec:
   storage:
     type: grpc-plugin
     grpcPlugin:
-      image: ghcr.io/flitnetics/jaeger-objectstorage:latest
+      image: ghcr.io/flitnetics/jaeger-tempo:latest
     options:
       grpc-storage-plugin:
         binary: /plugin/jaeger-tempo
