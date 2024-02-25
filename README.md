@@ -2,7 +2,7 @@
 
 **ALL WORK CONTINUES AT [jaeger-objectstorage](https://github.com/flitnetics/jaeger-objectstorage) REPO**
 
-This is the repository that contains Tempo plugin for Jaeger.
+This is the repository that contains Jaeger plugin to interface with Tempo.
 
 You are free to use this software under a permissive open-source MIT license.
 
@@ -19,10 +19,10 @@ In order to compile the plugin from source code you can use `go build`:
 cd /path/to/jaeger-tempo
 go build ./cmd/jaeger-tempo
 ```
-Changes for AWS with Retention for 28 days
-**(Update and add the necessary bits like above, ie. "compactor" and "table_manager")**
+
+config.yml (or any name you want)
 ```
-backend: tempo.host:3200 # no http// here
+backend: tempo.host:3200 # no http:// here
 ```
 
 ## Start
@@ -30,6 +30,26 @@ In order to start plugin just tell jaeger the path to a config compiled plugin.
 
 ```
 GRPC_STORAGE_PLUGIN_BINARY="./jaeger-tempo" GRPC_STORAGE_PLUGIN_CONFIGURATION_FILE=./config.yaml SPAN_STORAGE_TYPE=grpc-plugin  GRPC_STORAGE_PLUGIN_LOG_LEVEL=DEBUG ./all-in-one
+```
+
+Example with docker:
+
+Make sure you run this in a folder with `jaeger-tempo` binary and `config.yml` present.
+```
+docker run --name jaeger -e SPAN_STORAGE_TYPE=grpc-plugin \
+  -e GRPC_STORAGE_PLUGIN_BINARY="/app/jaeger-tempo" \
+  -e GRPC_STORAGE_PLUGIN_CONFIGURATION_FILE=/app/config.yml \
+  -e GRPC_STORAGE_PLUGIN_LOG_LEVEL=DEBUG --mount type=bind,source="$(pwd)",target=/app \
+  -e COLLECTOR_ZIPKIN_HOST_PORT=:9411 -e ASSUME_NO_MOVING_GC_UNSAFE_RISK_IT_WITH=go1.19\
+  -p 5775:5775/udp \
+  -p 6831:6831/udp \
+  -p 6832:6832/udp \
+  -p 5778:5778 \
+  -p 16686:16686 \
+  -p 14268:14268 \
+  -p 14250:14250 \
+  -p 9411:9411  \
+  jaegertracing/all-in-one:1.22
 ```
 
 For Jaeger Operator on Kubernetes for testing/demo **!!NOT PRODUCTION!!**, sample manifest:
@@ -71,7 +91,7 @@ spec:
 apiVersion: jaegertracing.io/v1
 kind: Jaeger
 metadata:
-  name: jaeger-objectstorage
+  name: jaeger-tempo
 spec:
   strategy: allInOne
   allInOne:
@@ -81,7 +101,7 @@ spec:
   storage:
     type: grpc-plugin
     grpcPlugin:
-      image: ghcr.io/flitnetics/jaeger-objectstorage:latest
+      image: ghcr.io/flitnetics/jaeger-tempo:latest
     options:
       grpc-storage-plugin:
         binary: /plugin/jaeger-tempo
