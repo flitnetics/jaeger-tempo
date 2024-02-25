@@ -1,10 +1,12 @@
+**NOTE: THIS REPO IS ARCHIVED**
+
+**ALL WORK CONTINUES AT [jaeger-objectstorage](https://github.com/flitnetics/jaeger-objectstorage) REPO**
+
 This is the repository that contains Tempo plugin for Jaeger.
 
 You are free to use this software under a permissive open-source MIT license.
 
 To fund further work and maintenance on this plugin, work will be done by flitnetics.
-
-If you require additional support for your infrastructure, you can contact [Sales](mailto:sales@flitnetics.com)
 
 ## About
 
